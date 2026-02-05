@@ -1,0 +1,196 @@
+{
+  "dex": {
+    "uniswap": {
+      "name": "Uniswap",
+      "type": "AMM DEX",
+      "chains": ["ethereum", "arbitrum", "optimism", "polygon", "base"],
+      "contracts": {
+        "ethereum": {
+          "router_v2": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+          "router_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+          "factory_v2": "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f",
+          "factory_v3": "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+        }
+      },
+      "defillama_id": "uniswap",
+      "website": "https://uniswap.org"
+    },
+    "sushiswap": {
+      "name": "SushiSwap",
+      "type": "AMM DEX",
+      "chains": ["ethereum", "arbitrum", "polygon"],
+      "contracts": {
+        "ethereum": {
+          "router": "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"
+        }
+      },
+      "defillama_id": "sushiswap",
+      "website": "https://sushi.com"
+    },
+    "curve": {
+      "name": "Curve Finance",
+      "type": "Stablecoin DEX",
+      "chains": ["ethereum", "arbitrum", "polygon"],
+      "contracts": {
+        "ethereum": {
+          "registry": "0x90E00ACe148ca3b23Ac1bC8C240C2a7Dd9c2d7f5"
+        }
+      },
+      "defillama_id": "curve-dex",
+      "website": "https://curve.fi"
+    },
+    "pancakeswap": {
+      "name": "PancakeSwap",
+      "type": "AMM DEX",
+      "chains": ["bsc", "ethereum"],
+      "contracts": {
+        "bsc": {
+          "router_v2": "0x10ED43C718714eb63d5aA57B78B54704E256024E"
+        }
+      },
+      "defillama_id": "pancakeswap",
+      "website": "https://pancakeswap.finance"
+    }
+  },
+  "lending": {
+    "aave": {
+      "name": "Aave",
+      "type": "Lending Protocol",
+      "chains": ["ethereum", "arbitrum", "optimism", "polygon"],
+      "contracts": {
+        "ethereum": {
+          "pool_v3": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+          "pool_v2": "0x7d2768dE32b0b80b7a3454c06BdAc94A69DDc7A9"
+        }
+      },
+      "defillama_id": "aave",
+      "website": "https://aave.com"
+    },
+    "compound": {
+      "name": "Compound",
+      "type": "Lending Protocol",
+      "chains": ["ethereum"],
+      "contracts": {
+        "ethereum": {
+          "comptroller": "0x3d9819210A31b4961b30EF54bE2aeD79B9c9Cd3B"
+        }
+      },
+      "defillama_id": "compound-finance",
+      "website": "https://compound.finance"
+    },
+    "makerdao": {
+      "name": "MakerDAO",
+      "type": "CDP/Lending",
+      "chains": ["ethereum"],
+      "contracts": {
+        "ethereum": {
+          "vat": "0x35D1b3F3D7966A1DFe207aa4514C12a259A0492B"
+        }
+      },
+      "defillama_id": "makerdao",
+      "website": "https://makerdao.com"
+    }
+  },
+  "liquid_staking": {
+    "lido": {
+      "name": "Lido",
+      "type": "Liquid Staking",
+      "chains": ["ethereum"],
+      "contracts": {
+        "ethereum": {
+          "steth": "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+          "wsteth": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0"
+        }
+      },
+      "defillama_id": "lido",
+      "website": "https://lido.fi"
+    },
+    "rocketpool": {
+      "name": "Rocket Pool",
+      "type": "Liquid Staking",
+      "chains": ["ethereum"],
+      "contracts": {
+        "ethereum": {
+          "reth": "0xae78736Cd615f374D3085123A210448E74Fc6393"
+        }
+      },
+      "defillama_id": "rocket-pool",
+      "website": "https://rocketpool.net"
+    }
+  },
+  "bridges": {
+    "arbitrum_bridge": {
+      "name": "Arbitrum Bridge",
+      "type": "L2 Bridge",
+      "chains": ["ethereum", "arbitrum"],
+      "contracts": {
+        "ethereum": {
+          "gateway": "0x72Ce9c846789fdB6fC1f34aC4AD25Dd9ef7031ef"
+        }
+      }
+    },
+    "optimism_bridge": {
+      "name": "Optimism Bridge",
+      "type": "L2 Bridge",
+      "chains": ["ethereum", "optimism"],
+      "contracts": {
+        "ethereum": {
+          "gateway": "0x99C9fc46f92E8a1c0deC1b1747d010903E884bE1"
+        }
+      }
+    },
+    "stargate": {
+      "name": "Stargate",
+      "type": "Cross-chain Bridge",
+      "chains": ["ethereum", "arbitrum", "optimism", "polygon", "bsc"],
+      "defillama_id": "stargate",
+      "website": "https://stargate.finance"
+    }
+  },
+  "derivatives": {
+    "gmx": {
+      "name": "GMX",
+      "type": "Perps DEX",
+      "chains": ["arbitrum", "avalanche"],
+      "contracts": {
+        "arbitrum": {
+          "vault": "0x489ee077994B6658eAfA855C308275EAd8097C4A",
+          "router": "0xaBBc5F99639c9B6bCb58544ddf04EFA6802F4064"
+        }
+      },
+      "defillama_id": "gmx",
+      "website": "https://gmx.io"
+    },
+    "dydx": {
+      "name": "dYdX",
+      "type": "Perps DEX",
+      "chains": ["ethereum", "dydx"],
+      "defillama_id": "dydx",
+      "website": "https://dydx.exchange"
+    }
+  },
+  "nft_marketplaces": {
+    "opensea": {
+      "name": "OpenSea",
+      "type": "NFT Marketplace",
+      "chains": ["ethereum", "polygon"],
+      "contracts": {
+        "ethereum": {
+          "seaport": "0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC"
+        }
+      },
+      "website": "https://opensea.io"
+    },
+    "blur": {
+      "name": "Blur",
+      "type": "NFT Marketplace",
+      "chains": ["ethereum"],
+      "contracts": {
+        "ethereum": {
+          "exchange": "0x000000000000Ad05Ccc4F10045630fb830B95127"
+        }
+      },
+      "website": "https://blur.io"
+    }
+  }
+}
