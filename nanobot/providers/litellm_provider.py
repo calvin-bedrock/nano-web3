@@ -59,6 +59,9 @@ class LiteLLMProvider(LLMProvider):
                 os.environ.setdefault("ZHIPUAI_API_KEY", api_key)
             elif "groq" in default_model:
                 os.environ.setdefault("GROQ_API_KEY", api_key)
+            elif "moonshot" in default_model or "kimi" in default_model:
+                os.environ.setdefault("MOONSHOT_API_KEY", api_key)
+                os.environ.setdefault("MOONSHOT_API_BASE", api_base or "https://api.moonshot.cn/v1")
         
         if api_base:
             litellm.api_base = api_base
@@ -101,19 +104,25 @@ class LiteLLMProvider(LLMProvider):
             model.startswith("openrouter/")
         ):
             model = f"zai/{model}"
-        
-        # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
-        # Convert openai/ prefix to hosted_vllm/ if user specified it
-        if self.is_vllm:
-            model = f"hosted_vllm/{model}"
-        
+
+        # For Moonshot/Kimi, ensure moonshot/ prefix (before vLLM check)
+        if ("moonshot" in model.lower() or "kimi" in model.lower()) and not (
+            model.startswith("moonshot/") or model.startswith("openrouter/")
+        ):
+            model = f"moonshot/{model}"
+
         # For Gemini, ensure gemini/ prefix if not already present
         if "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
 
-        # For DeepSeek, ensure deepseek/ prefix if not already present
-        if "deepseek" in model.lower() and not model.startswith("deepseek/"):
-            model = f"deepseek/{model}"
+        # For vLLM, use hosted_vllm/ prefix per LiteLLM docs
+        # Convert openai/ prefix to hosted_vllm/ if user specified it
+        if self.is_vllm:
+            model = f"hosted_vllm/{model}"
+
+        # kimi-k2.5 only supports temperature=1.0
+        if "kimi-k2.5" in model.lower():
+            temperature = 1.0
 
         kwargs: dict[str, Any] = {
             "model": model,
