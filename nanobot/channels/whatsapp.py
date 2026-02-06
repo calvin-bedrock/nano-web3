@@ -72,12 +72,12 @@ class WhatsAppChannel(BaseChannel):
             await self._ws.close()
             self._ws = None
     
-    async def send(self, msg: OutboundMessage) -> None:
+    async def send(self, msg: OutboundMessage) -> str | None:
         """Send a message through WhatsApp."""
         if not self._ws or not self._connected:
             logger.warning("WhatsApp bridge not connected")
-            return
-        
+            return None
+
         try:
             payload = {
                 "type": "send",
@@ -85,8 +85,23 @@ class WhatsAppChannel(BaseChannel):
                 "text": msg.content
             }
             await self._ws.send(json.dumps(payload))
+            # WhatsApp doesn't return message IDs through this simple bridge
+            return None
         except Exception as e:
             logger.error(f"Error sending WhatsApp message: {e}")
+            return None
+
+    async def edit(self, msg: OutboundMessage) -> bool:
+        """Edit a message - WhatsApp doesn't support editing, send as new message."""
+        # WhatsApp doesn't support message editing
+        # Send as new message with a prefix to indicate it's an update
+        new_msg = OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"📝 Update:\n\n{msg.content}"
+        )
+        await self.send(new_msg)
+        return False
     
     async def _handle_bridge_message(self, raw: str) -> None:
         """Handle a message from the bridge."""

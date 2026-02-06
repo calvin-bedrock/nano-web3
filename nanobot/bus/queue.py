@@ -33,10 +33,29 @@ class MessageBus:
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         """Publish a response from the agent to channels."""
         await self.outbound.put(msg)
-    
+
     async def consume_outbound(self) -> OutboundMessage:
         """Consume the next outbound message (blocks until available)."""
         return await self.outbound.get()
+
+    async def send_immediate(self, msg: OutboundMessage, channel_getter: Callable[[str], any]) -> str | None:
+        """
+        Send a message immediately and return the message_id.
+
+        This bypasses the queue and calls the channel directly, allowing
+        the caller to get the message_id for later editing.
+
+        Args:
+            msg: The message to send.
+            channel_getter: Function to get the channel by name.
+
+        Returns:
+            The message_id if tracking was requested, None otherwise.
+        """
+        channel = channel_getter(msg.channel)
+        if channel:
+            return await channel.send(msg)
+        return None
     
     def subscribe_outbound(
         self, 
