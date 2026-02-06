@@ -1,0 +1,29 @@
+# Nanobot Test Environment
+# Usage:
+#   docker compose up -d           # Start test environment
+#   docker compose logs -f         # View logs
+#   docker compose restart         # Restart (quick restart during dev)
+#   docker compose down            # Stop and remove
+
+services:
+  nanobot-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nanobot-test
+    restart: unless-stopped
+    ports:
+      - "18791:18790"  # Map host 18791 to container 18790
+    volumes:
+      # Mount config directory - create config-test.json locally first
+      - ./config-test.json:/root/.nanobot/config.json:ro
+      # Mount workspace for persistent data
+      - ./workspace-test:/root/.nanobot/workspace
+      # Optional: mount skills directory for live updates during dev
+      - ./nanobot/skills:/app/nanobot/skills:ro
+    environment:
+      # Override any config values via environment if needed
+      - NANOBOT__GATEWAY__PORT=18790
+      - NANOBOT__GATEWAY__HOST=0.0.0.0
+    # Run the gateway server to keep bot alive
+    command: ["gateway"]

@@ -30,11 +30,20 @@ class FeishuConfig(BaseModel):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
 
 
+class SlackConfig(BaseModel):
+    """Slack channel configuration using Socket Mode."""
+    enabled: bool = False
+    bot_token: str = ""  # xoxb- token from Slack App (Bot User OAuth Token)
+    app_level_token: str = ""  # xapp- token from Slack App (App-Level Token)
+    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
+
+
 class ChannelsConfig(BaseModel):
     """Configuration for chat channels."""
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+    slack: SlackConfig = Field(default_factory=SlackConfig)
 
 
 class AgentDefaults(BaseModel):

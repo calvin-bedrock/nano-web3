@@ -80,6 +80,123 @@ class AgentLoop:
         if spawn_tool:
             spawn_tool.set_send_callback(self._send_immediate)
 
+    def _classify_message(self, content: str) -> dict[str, Any]:
+        """
+        Classify the message type to determine acknowledgment strategy.
+
+        Returns:
+            dict with:
+            - needs_ack: bool - whether to send acknowledgment
+            - type: str - message category
+            - ack_message: str | None - custom ack message
+            - expected_time: str - expected response time hint
+        """
+        import re
+        content_lower = content.lower().strip()
+        content_stripped = content.strip()
+
+        # 1. Greetings - NO ACK, fast response
+        greetings = [
+            "hello", "hi", "hey", "嗨", "你好", "您好", "哈喽",
+            "morning", "afternoon", "evening", "早上好", "下午好", "晚上好",
+            "thanks", "thank you", "谢谢", "感谢", "thx", "bye", "再见",
+            "ok", "okay", "好的", "行", "是", "yes", "no", "否"
+        ]
+        if content_stripped in greetings or content_lower in greetings:
+            return {"needs_ack": False, "type": "greeting"}
+
+        # 2. Simple questions - NO ACK, fast LLM response
+        # Single short questions without complex requirements
+        simple_patterns = [
+            r"^(what|how|why|when|where|who|which|是|什么|怎么|为什么|何时|何地|谁)\s",
+            r"^(can|could|will|would|do|does|did|是|能不能|会|要)\s",
+            r"^(tell|say|explain|describe|讲|说|解释|描述)\s",
+        ]
+        for pattern in simple_patterns:
+            if re.match(pattern, content_lower) and len(content_stripped) < 100:
+                # Check if it's NOT asking for something complex
+                complex_indicators = ["code", "代码", "analyze", "分析", "search", "搜索",
+                                     "find", "找", "write", "写", "create", "创建", "build", "build"]
+                if not any(indicator in content_lower for indicator in complex_indicators):
+                    return {"needs_ack": False, "type": "simple_question"}
+
+        # 3. Code/Development tasks - NEED ACK, takes time
+        dev_keywords = ["写", "write", "create", "创建", "build", "implement", "实现",
+                       "code", "代码", "function", "函数", "class", "类", "api", "endpoint",
+                       "refactor", "重构", "fix", "修复", "bug", "debug", "调试"]
+        if any(keyword in content_lower for keyword in dev_keywords):
+            return {
+                "needs_ack": True,
+                "type": "dev_task",
+                "ack_message": "💻 收到开发任务，正在分析需求...",
+                "expected_time": "30s-2m"
+            }
+
+        # 4. Search/Research tasks - NEED ACK, external API calls
+        search_keywords = ["search", "搜索", "find", "找", "look up", "查询",
+                          "research", "research", "investigate", "调查", "google"]
+        if any(keyword in content_lower for keyword in search_keywords):
+            return {
+                "needs_ack": True,
+                "type": "search",
+                "ack_message": "🔎 正在搜索相关信息...",
+                "expected_time": "10-30s"
+            }
+
+        # 5. Analysis tasks - NEED ACK, multiple tool calls
+        analysis_keywords = ["analyze", "分析", "check", "检查", "review", "review",
+                           "audit", "审计", "compare", "比较", "evaluate", "评估"]
+        if any(keyword in content_lower for keyword in analysis_keywords):
+            return {
+                "needs_ack": True,
+                "type": "analysis",
+                "ack_message": "🔍 收到分析请求，正在处理...",
+                "expected_time": "15-60s"
+            }
+
+        # 6. File operations - NEED ACK
+        file_keywords = ["read", "读", "write", "写", "edit", "编辑",
+                        "delete", "删除", "move", "移动", "copy", "复制", "file", "文件"]
+        if any(keyword in content_lower for keyword in file_keywords):
+            return {
+                "needs_ack": True,
+                "type": "file_ops",
+                "ack_message": "📁 正在处理文件操作...",
+                "expected_time": "5-15s"
+            }
+
+        # 7. Long messages (>150 chars) - NEED ACK, likely complex
+        if len(content_stripped) > 150:
+            return {
+                "needs_ack": True,
+                "type": "complex",
+                "ack_message": "🤔 收到复杂请求，正在思考...",
+                "expected_time": "20-60s"
+            }
+
+        # 8. Default: short messages - NO ACK
+        return {"needs_ack": False, "type": "default"}
+
+    async def _send_acknowledgment(self, msg: InboundMessage) -> None:
+        """Send an immediate acknowledgment message based on message classification."""
+        # Only for Slack and Telegram (not CLI)
+        if msg.channel not in ("slack", "telegram"):
+            return
+
+        classification = self._classify_message(msg.content)
+
+        if not classification["needs_ack"]:
+            return
+
+        ack = classification.get("ack_message", "👍 收到！")
+
+        await self._send_immediate(OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=ack,
+            metadata=msg.metadata  # Include thread_ts for Slack
+        ))
+
     async def _send_immediate(self, msg: "OutboundMessage") -> str | None:
         """Send a message immediately and return the message_id."""
         from loguru import logger
@@ -239,6 +356,9 @@ If NOT a dev task, return {"is_dev_task": false}."""},
 
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}")
 
+        # Send acknowledgment immediately for Slack/Telegram
+        await self._send_acknowledgment(msg)
+
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
 
@@ -332,7 +452,19 @@ If NOT a dev task, return {"is_dev_task": false}."""},
                 break
 
         if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+            # Tools were executed but no final content - ask for summary
+            logger.info("No final content after tool execution, requesting summary...")
+            messages.append({
+                "role": "user",
+                "content": "请基于以上工具执行结果，用简洁的语言总结你完成的任务。"
+            })
+            summary_response = await self.provider.chat(
+                messages=messages,
+                tools=None,
+                model=self.model,
+                max_tokens=1000
+            )
+            final_content = summary_response.content or "✅ 任务已完成"
 
         # Save to session
         session.add_message("user", msg.content)
@@ -342,7 +474,8 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content
+            content=final_content,
+            metadata=msg.metadata  # Include thread_ts for Slack replies
         )
 
     def _format_task_proposal(self, task: dict[str, Any]) -> str:
