@@ -58,29 +58,35 @@ class MessageTool(Tool):
         }
     
     async def execute(
-        self, 
-        content: str, 
-        channel: str | None = None, 
+        self,
+        content: str,
+        channel: str | None = None,
         chat_id: str | None = None,
+        track_message_id: bool = False,
+        edit_message_id: str | None = None,
         **kwargs: Any
     ) -> str:
         channel = channel or self._default_channel
         chat_id = chat_id or self._default_chat_id
-        
+
         if not channel or not chat_id:
             return "Error: No target channel/chat specified"
-        
+
         if not self._send_callback:
             return "Error: Message sending not configured"
-        
+
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
-            content=content
+            content=content,
+            track_message_id=track_message_id,
+            edit_message_id=edit_message_id
         )
-        
+
         try:
-            await self._send_callback(msg)
+            result = await self._send_callback(msg)
+            if track_message_id and result:
+                return result  # Return the message_id
             return f"Message sent to {channel}:{chat_id}"
         except Exception as e:
             return f"Error sending message: {str(e)}"

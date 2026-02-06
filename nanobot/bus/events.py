@@ -26,12 +26,16 @@ class InboundMessage:
 @dataclass
 class OutboundMessage:
     """Message to send to a chat channel."""
-    
+
     channel: str
     chat_id: str
     content: str
     reply_to: str | None = None
     media: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # If edit_message_id is set, edit the existing message instead of sending new one
+    edit_message_id: str | None = None
+    # Request that this message's ID be tracked for future editing
+    track_message_id: bool = False
 
 

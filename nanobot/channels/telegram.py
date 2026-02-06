@@ -116,10 +116,12 @@ class TelegramChannel(BaseChannel):
             )
         )
         
-        # Add /start command handler
+        # Add command handlers
         from telegram.ext import CommandHandler
         self._app.add_handler(CommandHandler("start", self._on_start))
-        
+        self._app.add_handler(CommandHandler("skills", self._on_skills))
+        self._app.add_handler(CommandHandler("use", self._on_use))
+
         logger.info("Starting Telegram bot (polling mode)...")
         
         # Initialize and start polling
@@ -151,55 +153,150 @@ class TelegramChannel(BaseChannel):
             await self._app.shutdown()
             self._app = None
     
-    async def send(self, msg: OutboundMessage) -> None:
+    async def send(self, msg: OutboundMessage) -> str | None:
         """Send a message through Telegram."""
         if not self._app:
             logger.warning("Telegram bot not running")
-            return
-        
+            return None
+
         try:
             # chat_id should be the Telegram chat ID (integer)
             chat_id = int(msg.chat_id)
             # Convert markdown to Telegram HTML
             html_content = _markdown_to_telegram_html(msg.content)
-            await self._app.bot.send_message(
+            sent_msg = await self._app.bot.send_message(
                 chat_id=chat_id,
                 text=html_content,
                 parse_mode="HTML"
             )
+            # Return message_id if tracking is requested
+            return str(sent_msg.message_id) if msg.track_message_id else None
         except ValueError:
             logger.error(f"Invalid chat_id: {msg.chat_id}")
+            return None
         except Exception as e:
             # Fallback to plain text if HTML parsing fails
             logger.warning(f"HTML parse failed, falling back to plain text: {e}")
             try:
-                await self._app.bot.send_message(
+                sent_msg = await self._app.bot.send_message(
                     chat_id=int(msg.chat_id),
                     text=msg.content
                 )
+                return str(sent_msg.message_id) if msg.track_message_id else None
             except Exception as e2:
                 logger.error(f"Error sending Telegram message: {e2}")
+                return None
+
+    async def edit(self, msg: OutboundMessage) -> bool:
+        """Edit an existing message in Telegram."""
+        if not self._app:
+            logger.warning("Telegram bot not running")
+            return False
+        if not msg.edit_message_id:
+            logger.warning("edit_message_id not set for edit operation")
+            return False
+
+        try:
+            chat_id = int(msg.chat_id)
+            message_id = int(msg.edit_message_id)
+            html_content = _markdown_to_telegram_html(msg.content)
+
+            await self._app.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=html_content,
+                parse_mode="HTML"
+            )
+            logger.debug(f"Edited Telegram message {message_id} in chat {chat_id}")
+            return True
+        except ValueError:
+            logger.error(f"Invalid chat_id or message_id for edit: {msg.chat_id}, {msg.edit_message_id}")
+            return False
+        except Exception as e:
+            # Fallback: try sending as new message
+            logger.warning(f"Edit failed, sending as new message: {e}")
+            await self.send(msg)
+            return False
     
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:
             return
-        
+
         user = update.effective_user
         await update.message.reply_text(
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
-            "Send me a message and I'll respond!"
+            "可用命令:\n"
+            "/skills - 查看所有可用技能\n"
+            "/use <skill> - 查看技能详情并使用\n\n"
+            "直接发送任务描述，相关技能会自动加载！"
         )
-    
+
+    async def _on_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /skills command - list all available skills."""
+        if not update.message:
+            return
+
+        from nanobot.skills.discovery import get_discovery
+        discovery = get_discovery()
+
+        # Get optional category filter from args
+        args = context.args or []
+        category = args[0] if args else None
+
+        skills_text = discovery.format_list(category=category)
+        html_content = _markdown_to_telegram_html(skills_text)
+
+        await update.message.reply_text(
+            html_content,
+            parse_mode="HTML"
+        )
+
+    async def _on_use(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /use command - show skill details and start using it."""
+        if not update.message:
+            return
+
+        args = context.args or []
+        if not args:
+            await update.message.reply_text(
+                "用法: /use <skill-name>\n\n"
+                "例如: /use wallet-tracker\n\n"
+                "使用 /skills 查看所有可用技能"
+            )
+            return
+
+        skill_name = args[0]
+        from nanobot.skills.discovery import get_discovery
+        discovery = get_discovery()
+        skill = discovery.get_skill(skill_name)
+
+        if not skill:
+            await update.message.reply_text(
+                f"❌ 未找到技能: {skill_name}\n\n"
+                f"使用 /skills 查看所有可用技能"
+            )
+            return
+
+        # Format skill detail
+        detail = skill.format_detail()
+        usage_hint = f"\n\n💡 发送相关任务即可自动使用此技能\n例如: \"帮我分析 xxx\""
+
+        html_content = _markdown_to_telegram_html(detail + usage_hint)
+        await update.message.reply_text(
+            html_content,
+            parse_mode="HTML"
+        )
+
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
         if not update.message or not update.effective_user:
             return
-        
+
         message = update.message
         user = update.effective_user
         chat_id = message.chat_id
-        
+
         # Use stable numeric ID, but keep username for allowlist compatibility
         sender_id = str(user.id)
         if user.username:

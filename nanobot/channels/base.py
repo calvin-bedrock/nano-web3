@@ -47,14 +47,31 @@ class BaseChannel(ABC):
         pass
     
     @abstractmethod
-    async def send(self, msg: OutboundMessage) -> None:
+    async def send(self, msg: OutboundMessage) -> str | None:
         """
         Send a message through this channel.
-        
+
         Args:
             msg: The message to send.
+
+        Returns:
+            The message_id if track_message_id is True, None otherwise.
         """
         pass
+
+    async def edit(self, msg: OutboundMessage) -> bool:
+        """
+        Edit an existing message.
+
+        Args:
+            msg: The message with updated content and edit_message_id set.
+
+        Returns:
+            True if edit was successful, False otherwise.
+        """
+        # Default implementation: just send as new message
+        await self.send(msg)
+        return True
     
     def is_allowed(self, sender_id: str) -> bool:
         """

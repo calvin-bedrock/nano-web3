@@ -243,7 +243,7 @@ def gateway(
     )
     
     # Create channel manager
-    channels = ChannelManager(config, bus)
+    channels = ChannelManager(config, bus, agent_loop=agent)
     
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -314,6 +314,7 @@ def agent(
         bus=bus,
         provider=provider,
         workspace=config.workspace_path,
+        model=config.agents.defaults.model,
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
     )

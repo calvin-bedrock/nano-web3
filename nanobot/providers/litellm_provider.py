@@ -31,20 +31,24 @@ class LiteLLMProvider(LLMProvider):
             (api_key and api_key.startswith("sk-or-")) or
             (api_base and "openrouter" in api_base)
         )
-        
-        # Track if using custom endpoint (vLLM, etc.)
-        self.is_vllm = bool(api_base) and not self.is_openrouter
+
+        # Detect DeepSeek by model name or api_base
+        self.is_deepseek = "deepseek" in default_model or (api_base and "deepseek" in api_base)
+
+        # Track if using custom endpoint (vLLM, etc.) - but NOT for DeepSeek
+        self.is_vllm = bool(api_base) and not self.is_openrouter and not self.is_deepseek
         
         # Configure LiteLLM based on provider
         if api_key:
             if self.is_openrouter:
                 # OpenRouter mode - set key
                 os.environ["OPENROUTER_API_KEY"] = api_key
+            elif self.is_deepseek:
+                # DeepSeek mode
+                os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
             elif self.is_vllm:
                 # vLLM/custom endpoint - uses OpenAI-compatible API
                 os.environ["OPENAI_API_KEY"] = api_key
-            elif "deepseek" in default_model:
-                os.environ.setdefault("DEEPSEEK_API_KEY", api_key)
             elif "anthropic" in default_model:
                 os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
             elif "openai" in default_model or "gpt" in default_model:
@@ -106,7 +110,11 @@ class LiteLLMProvider(LLMProvider):
         # For Gemini, ensure gemini/ prefix if not already present
         if "gemini" in model.lower() and not model.startswith("gemini/"):
             model = f"gemini/{model}"
-        
+
+        # For DeepSeek, ensure deepseek/ prefix if not already present
+        if "deepseek" in model.lower() and not model.startswith("deepseek/"):
+            model = f"deepseek/{model}"
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,

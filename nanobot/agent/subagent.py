@@ -50,36 +50,39 @@ class SubagentManager:
         label: str | None = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
+        placeholder_message_id: str | None = None,
     ) -> str:
         """
         Spawn a subagent to execute a task in the background.
-        
+
         Args:
             task: The task description for the subagent.
             label: Optional human-readable label for the task.
             origin_channel: The channel to announce results to.
             origin_chat_id: The chat ID to announce results to.
-        
+            placeholder_message_id: Optional message ID to edit with result.
+
         Returns:
             Status message indicating the subagent was started.
         """
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
-        
+
         origin = {
             "channel": origin_channel,
             "chat_id": origin_chat_id,
+            "placeholder_message_id": placeholder_message_id,
         }
-        
+
         # Create background task
         bg_task = asyncio.create_task(
             self._run_subagent(task_id, task, display_label, origin)
         )
         self._running_tasks[task_id] = bg_task
-        
+
         # Cleanup when done
         bg_task.add_done_callback(lambda _: self._running_tasks.pop(task_id, None))
-        
+
         logger.info(f"Spawned subagent [{task_id}]: {display_label}")
         return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
     
@@ -184,8 +187,32 @@ class SubagentManager:
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
         status_text = "completed successfully" if status == "ok" else "failed"
-        
-        announce_content = f"""[Subagent '{label}' {status_text}]
+
+        # Check if we have a placeholder message to edit
+        placeholder_message_id = origin.get("placeholder_message_id")
+        origin_channel = origin["channel"]
+        origin_chat_id = origin["chat_id"]
+
+        # Build the result content
+        if status == "ok":
+            result_content = f"✅ *{label}*\n\n{result}"
+        else:
+            result_content = f"❌ *{label} failed*\n\n{result}"
+
+        # If we have a placeholder message, try to edit it directly
+        if placeholder_message_id and origin_channel != "cli":
+            from nanobot.bus.events import OutboundMessage
+            edit_msg = OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=result_content,
+                edit_message_id=placeholder_message_id
+            )
+            await self.bus.publish_outbound(edit_msg)
+            logger.debug(f"Subagent [{task_id}] edited placeholder {placeholder_message_id}")
+        else:
+            # Fall back to system message announcement
+            announce_content = f"""[Subagent '{label}' {status_text}]
 
 Task: {task}
 
@@ -193,17 +220,17 @@ Result:
 {result}
 
 Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
-        
-        # Inject as system message to trigger main agent
-        msg = InboundMessage(
-            channel="system",
-            sender_id="subagent",
-            chat_id=f"{origin['channel']}:{origin['chat_id']}",
-            content=announce_content,
-        )
-        
-        await self.bus.publish_inbound(msg)
-        logger.debug(f"Subagent [{task_id}] announced result to {origin['channel']}:{origin['chat_id']}")
+
+            # Inject as system message to trigger main agent
+            msg = InboundMessage(
+                channel="system",
+                sender_id="subagent",
+                chat_id=f"{origin_channel}:{origin_chat_id}",
+                content=announce_content,
+            )
+
+            await self.bus.publish_inbound(msg)
+            logger.debug(f"Subagent [{task_id}] announced result to {origin_channel}:{origin_chat_id}")
     
     def _build_subagent_prompt(self, task: str) -> str:
         """Build a focused system prompt for the subagent."""

@@ -20,6 +20,8 @@ try:
         CreateMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        UpdateMessageRequest,
+        UpdateMessageRequestBody,
         Emoji,
         P2ImMessageReceiveV1,
     )
@@ -156,12 +158,12 @@ class FeishuChannel(BaseChannel):
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._add_reaction_sync, message_id, emoji_type)
     
-    async def send(self, msg: OutboundMessage) -> None:
+    async def send(self, msg: OutboundMessage) -> str | None:
         """Send a message through Feishu."""
         if not self._client:
             logger.warning("Feishu client not initialized")
-            return
-        
+            return None
+
         try:
             # Determine receive_id_type based on chat_id format
             # open_id starts with "ou_", chat_id starts with "oc_"
@@ -169,10 +171,10 @@ class FeishuChannel(BaseChannel):
                 receive_id_type = "chat_id"
             else:
                 receive_id_type = "open_id"
-            
+
             # Build text message content
             content = json.dumps({"text": msg.content})
-            
+
             request = CreateMessageRequest.builder() \
                 .receive_id_type(receive_id_type) \
                 .request_body(
@@ -182,19 +184,69 @@ class FeishuChannel(BaseChannel):
                     .content(content)
                     .build()
                 ).build()
-            
+
             response = self._client.im.v1.message.create(request)
-            
+
             if not response.success():
                 logger.error(
                     f"Failed to send Feishu message: code={response.code}, "
                     f"msg={response.msg}, log_id={response.get_log_id()}"
                 )
+                return None
             else:
                 logger.debug(f"Feishu message sent to {msg.chat_id}")
-                
+                # Return message_id if tracking is requested
+                if msg.track_message_id and response.data:
+                    return response.data.message_id
+                return None
+
         except Exception as e:
             logger.error(f"Error sending Feishu message: {e}")
+            return None
+
+    async def edit(self, msg: OutboundMessage) -> bool:
+        """Edit an existing message in Feishu."""
+        if not FEISHU_AVAILABLE:
+            # Fallback to send if imports not available
+            await self.send(msg)
+            return False
+        if not self._client:
+            logger.warning("Feishu client not initialized")
+            return False
+        if not msg.edit_message_id:
+            logger.warning("edit_message_id not set for edit operation")
+            return False
+
+        try:
+            # Build updated content
+            content = json.dumps({"text": msg.content})
+
+            request = UpdateMessageRequest.builder() \
+                .message_id(msg.edit_message_id) \
+                .request_body(
+                    UpdateMessageRequestBody.builder()
+                    .content(content)
+                    .build()
+                ).build()
+
+            response = self._client.im.v1.message.update(request)
+
+            if not response.success():
+                logger.error(
+                    f"Failed to edit Feishu message: code={response.code}, "
+                    f"msg={response.msg}, log_id={response.get_log_id()}"
+                )
+                # Fallback: send as new message
+                await self.send(msg)
+                return False
+            else:
+                logger.debug(f"Edited Feishu message {msg.edit_message_id}")
+                return True
+
+        except Exception as e:
+            logger.warning(f"Edit failed, sending as new message: {e}")
+            await self.send(msg)
+            return False
     
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
