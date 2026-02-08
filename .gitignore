@@ -24,3 +24,4 @@ config-prod.json
 workspace-prod/
 poetry.lock
 .pytest_cache/
+tests/
