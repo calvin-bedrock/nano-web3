@@ -303,9 +303,23 @@ class SlackChannel(BaseChannel):
         clean_text = self._remove_bot_mention(text)
         logger.info(f"Clean text after removing mention: '{clean_text}'")
 
-        if not clean_text.strip():
-            logger.info("Empty text after removing mention, ignoring")
-            return
+        # Handle empty mention or task commands
+        clean_lower = clean_text.strip().lower()
+        if not clean_lower:
+            # Empty mention - send command to show task list
+            clean_text = "/task list"
+        elif clean_lower in ("task list", "tasks", "任务列表", "任务", "tasks list"):
+            # Common task list commands (without slash)
+            clean_text = "/task list"
+        elif clean_lower.startswith("task show") or clean_lower.startswith("任务详情"):
+            clean_text = "/task show"
+        elif clean_lower.startswith("status ") or clean_lower.startswith("状态 "):
+            # status <task-id> -> /task show
+            task_id = clean_text.split()[1] if len(clean_text.split()) > 1 else ""
+            if task_id:
+                clean_text = f"/task show {task_id}"
+        elif clean_lower in ("task clear", "清除任务"):
+            clean_text = "/task clear"
 
         # Cache user info
         await self._cache_user_info(user_id)

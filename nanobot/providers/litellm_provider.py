@@ -95,7 +95,11 @@ class LiteLLMProvider(LLMProvider):
         # For OpenRouter, prefix model name if not already prefixed
         if self.is_openrouter and not model.startswith("openrouter/"):
             model = f"openrouter/{model}"
-        
+
+        # For DeepSeek, ensure deepseek/ prefix if not already present
+        if self.is_deepseek and not model.startswith("deepseek/"):
+            model = f"deepseek/{model}"
+
         # For Zhipu/Z.ai, ensure prefix is present
         # Handle cases like "glm-4.7-flash" -> "zai/glm-4.7-flash"
         if ("glm" in model.lower() or "zhipu" in model.lower()) and not (

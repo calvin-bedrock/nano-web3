@@ -24,7 +24,9 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
-    pending_task: dict[str, Any] | None = None  # Pending task awaiting approval
+    pending_task: dict[str, Any] | None = None  # Pending task awaiting approval (legacy)
+    active_task_id: str | None = None  # Current active task ID for new task system
+    tasks_data: dict[str, Any] | None = None  # TaskManager serialized data
     
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -56,6 +58,19 @@ class Session:
     def clear(self) -> None:
         """Clear all messages in the session."""
         self.messages = []
+        self.updated_at = datetime.now()
+
+    def get_task_manager(self):
+        """Get or create the TaskManager for this session."""
+        from nanobot.agent.tasks import TaskManager
+
+        if self.tasks_data:
+            return TaskManager.from_dict(self.tasks_data)
+        return TaskManager(self.key)
+
+    def save_tasks(self, task_manager) -> None:
+        """Save task manager data to session."""
+        self.tasks_data = task_manager.to_dict()
         self.updated_at = datetime.now()
 
 
@@ -101,34 +116,40 @@ class SessionManager:
     def _load(self, key: str) -> Session | None:
         """Load a session from disk."""
         path = self._get_session_path(key)
-        
+
         if not path.exists():
             return None
-        
+
         try:
             messages = []
             metadata = {}
             created_at = None
-            
+            active_task_id = None
+            tasks_data = None
+
             with open(path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    
+
                     data = json.loads(line)
-                    
+
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
                         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                        active_task_id = data.get("active_task_id")
+                        tasks_data = data.get("tasks_data")
                     else:
                         messages.append(data)
-            
+
             return Session(
                 key=key,
                 messages=messages,
                 created_at=created_at or datetime.now(),
-                metadata=metadata
+                metadata=metadata,
+                active_task_id=active_task_id,
+                tasks_data=tasks_data,
             )
         except Exception as e:
             logger.warning(f"Failed to load session {key}: {e}")
@@ -137,21 +158,23 @@ class SessionManager:
     def save(self, session: Session) -> None:
         """Save a session to disk."""
         path = self._get_session_path(session.key)
-        
+
         with open(path, "w") as f:
             # Write metadata first
             metadata_line = {
                 "_type": "metadata",
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata
+                "metadata": session.metadata,
+                "active_task_id": session.active_task_id,
+                "tasks_data": session.tasks_data,
             }
             f.write(json.dumps(metadata_line) + "\n")
-            
+
             # Write messages
             for msg in session.messages:
                 f.write(json.dumps(msg) + "\n")
-        
+
         self._cache[session.key] = session
     
     def delete(self, key: str) -> bool:

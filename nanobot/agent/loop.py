@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 
@@ -19,6 +20,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tasks import TaskManager, Task
 from nanobot.session.manager import SessionManager
 
 
@@ -327,16 +329,35 @@ If NOT a dev task, return {"is_dev_task": false}."""},
                 temperature=0.3
             )
             import json
-            result = json.loads(response.content or "{}")
+            llm_content = response.content or "{}"
+
+            # Try to extract JSON from response
+            result = None
+            try:
+                result = json.loads(llm_content)
+            except json.JSONDecodeError:
+                # Try to find JSON in the response
+                import re
+                json_match = re.search(r'\{[^}]*"is_dev_task"[^}]*\}', llm_content, re.DOTALL)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+            # If still no valid JSON, create a default dev task
+            if not result:
+                logger.warning(f"Could not parse JSON from LLM, creating default task. Response: {llm_content[:100]}")
+                result = {"is_dev_task": True}
 
             if result.get("is_dev_task"):
                 return {
                     "type": "dev_task",
-                    "original_request": content,
-                    "analysis": result.get("analysis", ""),
+                    "original_request": content,  # User's original request
+                    "analysis": result.get("analysis", "Development task based on user request"),
                     "requirements": result.get("requirements", []),
-                    "estimated_cost": result.get("estimated_cost", ""),
-                    "steps": result.get("steps", []),
+                    "estimated_cost": result.get("estimated_cost", "30-60 minutes"),
+                    "steps": result.get("steps", ["Analyze requirements", "Implement solution", "Test and deploy"]),
                 }
             return None
         except Exception as e:
@@ -360,33 +381,64 @@ If NOT a dev task, return {"is_dev_task": false}."""},
 
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}")
 
+        # Get or create session FIRST (needed for task check)
+        session = self.sessions.get_or_create(msg.session_key)
+
+        # Check for /task commands FIRST (even without active task)
+        content_stripped = msg.content.strip().lower()
+        if content_stripped.startswith("/task") and msg.channel != "cli":
+            task_response = await self._handle_task_command(msg, session, None)
+            if task_response:
+                return task_response
+
+        # Check for active task refinement (before ack)
+        # This allows iterative development on tasks
+        if session.active_task_id and msg.channel != "cli":
+            task_response = await self._handle_task_refinement(msg, session)
+            if task_response:
+                # If task_response is not None, it means the task system handled it
+                return task_response
+            # If None, fall through to normal processing
+
         # Send acknowledgment immediately for Slack/Telegram
         await self._send_acknowledgment(msg)
 
-        # Get or create session
-        session = self.sessions.get_or_create(msg.session_key)
-
-        # Check if there's a pending task awaiting approval
-        if session.pending_task:
+        # Check if there's a pending task awaiting approval (legacy flow)
+        if session.pending_task and not session.active_task_id:
             return await self._handle_task_approval(msg, session)
 
-        # Check if this is a development task that needs approval
-        dev_task = await self._analyze_development_task(msg.content)
-        if dev_task and msg.channel != "cli":
-            # Store pending task and send for approval
-            session.pending_task = dev_task
-            self.sessions.save(session)
+        # Check if message references an existing task (by title or exact description match)
+        task_manager = session.get_task_manager()
+        existing_task = None
+        content_stripped = msg.content.strip()
+        content_lower = content_stripped.lower()
 
-            # Format the proposal message
-            proposal = self._format_task_proposal(dev_task)
-            await self._send_immediate(OutboundMessage(
+        # Sort by created_at to find the OLDEST matching task (not most recent)
+        all_tasks = sorted(task_manager._tasks.values(), key=lambda t: t.created_at)
+
+        for task in all_tasks:
+            # Check exact title match or description match
+            if (task.title and task.title.lower() == content_lower) or \
+               (task.description and task.description.lower() == content_lower):
+                existing_task = task
+                logger.info(f"Found matching task: {task.id} title={task.title}")
+                break
+
+        if existing_task and msg.channel != "cli":
+            logger.info(f"Message matches existing task {existing_task.id}, showing it")
+            return OutboundMessage(
                 channel=msg.channel,
                 chat_id=msg.chat_id,
-                content=proposal
-            ))
+                content=f"ℹ️ 这个任务已存在:\n\n{existing_task.format_for_user()}\n\n---\n回复 `yes` 继续执行此任务，或发送新需求创建新任务。",
+                metadata=msg.metadata,
+            )
 
-            # Don't continue processing, wait for approval
-            return None
+        # Check if this is a development task that needs approval
+        # Skip if we already have an active task in refinement
+        dev_task = await self._analyze_development_task(msg.content)
+        if dev_task and msg.channel != "cli" and not session.active_task_id:
+            # Use new task system
+            return await self._create_task(msg, session, dev_task)
 
         # Update tool contexts
         message_tool = self.tools.get("message")
@@ -507,6 +559,462 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         lines.append("请确认是否执行: `yes` / `no`")
 
         return "\n".join(lines)
+
+    def _extract_task_title(self, content: str) -> str:
+        """Extract a short title from task description."""
+        # Clean common prefixes
+        prefixes = ["我需要", "我想要", "帮我", "请", "can you", "i need", "please"]
+        for prefix in prefixes:
+            if content.lower().startswith(prefix):
+                content = content[len(prefix):].strip()
+
+        lines = content.strip().split("\n")
+        first_line = lines[0].strip()
+
+        # Truncate if too long
+        if len(first_line) > 40:
+            # Try to end at a word boundary
+            truncated = first_line[:40]
+            last_space = truncated.rfind(" ")
+            if last_space > 20:
+                truncated = truncated[:last_space]
+            return truncated + "..."
+
+        return first_line
+
+    async def _create_task(
+        self,
+        msg: InboundMessage,
+        session: "Session",
+        dev_task: dict[str, Any],
+    ) -> OutboundMessage | None:
+        """
+        Create a new task from a development request.
+
+        Creates task in drafting state and shows it to user for refinement.
+        """
+        task_manager = session.get_task_manager()
+
+        title = self._extract_task_title(dev_task.get("original_request", ""))
+        logger.info(f"Creating task: title={title}, description={dev_task.get('original_request', '')[:50]}")
+
+        task = task_manager.create_task(
+            title=title,
+            description=dev_task.get("original_request", ""),
+            proposed_solution=dev_task,
+        )
+
+        logger.info(f"Task created: id={task.id}, category={task.category}, number={task.number}")
+
+        # Extract requirements from analysis
+        if dev_task.get("requirements"):
+            task.update_requirements(dev_task["requirements"])
+
+        # Set as active task
+        session.active_task_id = task.id
+        session.save_tasks(task_manager)
+        self.sessions.save(session)
+
+        logger.info(f"Task saved: active_task_id={session.active_task_id}, tasks_data_keys={list(session.tasks_data.get('tasks', {}).keys()) if session.tasks_data else None}")
+
+        # Show task to user
+        task.status = "refining"  # Allow refinement immediately
+        summary = task.format_for_user()
+
+        lines = [
+            f"✅ 任务已创建: `{task.id}`",
+            "",
+            summary,
+            "",
+            "---",
+            "💡 你可以:",
+            "  • 补充或修改需求 (直接发送)",
+            "  • 提问相关问题",
+            "  • 回复 `yes` 批准执行",
+            "  • 回复 `cancel` 取消任务",
+            "",
+        ]
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="\n".join(lines),
+            metadata=msg.metadata,
+        )
+
+    async def _handle_task_refinement(
+        self,
+        msg: InboundMessage,
+        session: "Session",
+    ) -> OutboundMessage | None:
+        """
+        Handle user input for an active task (refinement/approval).
+
+        Returns:
+            Response message, or None to continue normal processing.
+        """
+        content = msg.content.strip().lower()
+        task_manager = session.get_task_manager()
+        task = task_manager.get_task(session.active_task_id) if session.active_task_id else None
+
+        if not task:
+            # No active task, clear the reference
+            session.active_task_id = None
+            self.sessions.save(session)
+            return None
+
+        # Check for approval
+        if content in ("yes", "y", "是", "ok", "confirm", "approve", "批准"):
+            task_manager.approve_task(task.id)
+            session.active_task_id = None
+            session.save_tasks(task_manager)
+            self.sessions.save(session)
+
+            # Launch as background subagent
+            return await self._execute_task(msg, task)
+
+        # Check for cancellation
+        if content in ("no", "n", "否", "cancel", "取消"):
+            task_manager.set_task_status(task.id, "cancelled")
+            session.active_task_id = None
+            session.save_tasks(task_manager)
+            self.sessions.save(session)
+
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="❌ 任务已取消",
+                metadata=msg.metadata,
+            )
+
+        # Check for task commands
+        if content.startswith("/task"):
+            return await self._handle_task_command(msg, session, task_manager, task, content)
+
+        # Otherwise, treat as refinement - ask LLM to incorporate feedback
+        return await self._process_refinement(msg, session, task_manager, task)
+
+    async def _handle_task_command(
+        self,
+        msg: InboundMessage,
+        session: "Session",
+        task: Task | None,
+        content: str | None = None,
+    ) -> OutboundMessage | None:
+        """Handle task-related commands."""
+        content = content or msg.content.strip().lower()
+        parts = content.split()
+        cmd = parts[1] if len(parts) > 1 else ""
+        arg = parts[2] if len(parts) > 2 else ""  # Task ID argument
+
+        logger.info(f"_handle_task_command: cmd={cmd}, arg={arg}, content={content}")
+
+        task_manager = session.get_task_manager()
+        all_tasks = task_manager.list_tasks()
+        logger.info(f"TaskManager has {len(all_tasks)} tasks: {[t.id for t in all_tasks]}")
+
+        if cmd in ("show", "status"):
+            # If task ID provided, try to get that specific task
+            if arg:
+                task = task_manager.get_task(arg)
+                logger.info(f"Looking for task '{arg}': found={task is not None}")
+            # Otherwise use active task
+            if not task:
+                task = task_manager.get_task(session.active_task_id) if session.active_task_id else None
+                logger.info(f"Using active task '{session.active_task_id}': found={task is not None}")
+            if not task:
+                logger.warning(f"Task not found: arg={arg}, active={session.active_task_id}")
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"📋 任务 `{arg}` 不存在\n\n发送一个功能请求来创建新任务" if arg else "📋 没有活动任务\n\n发送一个功能请求来创建新任务",
+                    metadata=msg.metadata,
+                )
+
+            # Send acknowledgment if task is executing (will take time to get status)
+            if task.status == "executing" and msg.channel != "cli":
+                await self._send_immediate(OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"🔍 正在查询 `{task.id}` 的执行状态...",
+                    metadata=msg.metadata,
+                ))
+
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=task.format_for_user(),
+                metadata=msg.metadata,
+            )
+
+        if cmd == "list":
+            all_tasks = task_manager.list_tasks()
+            if not all_tasks:
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="📋 暂无任务\n\n发送一个功能请求来创建新任务",
+                    metadata=msg.metadata,
+                )
+            lines = ["📋 **任务列表**\n"]
+            for i, t in enumerate(all_tasks, 1):
+                title = t.title or (t.description.split('\n')[0][:35] if t.description else "未命名")
+                marker = " ← *进行中*" if t.id == session.active_task_id else ""
+                lines.append(f"{i}. {t._status_emoji()} {title}{marker}")
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="\n".join(lines),
+                metadata=msg.metadata,
+            )
+
+        if cmd == "clear":
+            if session.active_task_id:
+                session.active_task_id = None
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="✅ 已清除当前活动任务",
+                    metadata=msg.metadata,
+                )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="没有活动任务需要清除",
+                metadata=msg.metadata,
+            )
+
+        if cmd == "delete" and arg:
+            # Delete a specific task
+            if task_manager.delete_task(arg):
+                session.save_tasks(task_manager)
+                if session.active_task_id == arg:
+                    session.active_task_id = None
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"✅ 已删除任务 `{arg}`",
+                    metadata=msg.metadata,
+                )
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"❌ 任务 `{arg}` 不存在",
+                metadata=msg.metadata,
+            )
+
+        # Unknown command or no subcommand
+        if not cmd:
+            # Show brief help
+            all_tasks = task_manager.list_tasks()
+            if all_tasks:
+                lines = ["📋 **任务**\n", ""]
+                for t in all_tasks[:3]:  # Show last 3 tasks
+                    title = t.title or (t.description.split('\n')[0][:30] if t.description else "未命名")
+                    marker = " ← *进行中*" if t.id == session.active_task_id else ""
+                    lines.append(f"{t._status_emoji()} {title}{marker}")
+                lines.append("\n可用: /task show, /task list, /task clear")
+            else:
+                lines = ["📋 暂无任务", "", "发送功能请求来创建新任务"]
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="\n".join(lines),
+                metadata=msg.metadata,
+            )
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content="可用命令: /task show, /task list, /task clear",
+            metadata=msg.metadata,
+        )
+
+    async def _process_refinement(
+        self,
+        msg: InboundMessage,
+        session: "Session",
+        task_manager: TaskManager,
+        task: Task,
+    ) -> OutboundMessage | None:
+        """
+        Process user refinement and update the task.
+
+        Uses LLM to understand if this is:
+        1. A new requirement to add
+        2. A question about the task
+        3. A modification to the plan
+        """
+        # Build refinement analysis prompt
+        refinement_prompt = [
+            {
+                "role": "system",
+                "content": f"""You are helping refine a development task.
+
+Current Task:
+ID: {task.id}
+Title: {task.title}
+Description: {task.description}
+Requirements: {', '.join(task.requirements) if task.requirements else 'None'}
+
+Proposed Solution:
+{json.dumps(task.proposed_solution, ensure_ascii=False, indent=2)}
+
+Previous Refinements: {len(task.context.get('refinements', []))}
+
+Analyze the user's new input and respond with JSON:
+{{
+    "is_approval": true/false,
+    "is_question": true/false,
+    "is_requirement": true/false,
+    "new_requirements": ["list of new requirements if any"],
+    "updates": "description of what should be updated",
+    "response": "your response to the user"
+}}
+
+Rules:
+- If user says yes/confirm/批准, set is_approval=true
+- If user asks a question, set is_question=true and provide response
+- If user adds/modifies requirements, extract them as new_requirements
+- Always provide a helpful response"""
+            },
+            {"role": "user", "content": msg.content},
+        ]
+
+        try:
+            response = await self.provider.chat(
+                messages=refinement_prompt,
+                tools=None,
+                model=self.model,
+                max_tokens=800,
+                temperature=0.3,
+            )
+
+            result = json.loads(response.content or "{}")
+
+            # Check if this is actually an approval
+            if result.get("is_approval"):
+                return await self._handle_task_refinement(
+                    InboundMessage(
+                        channel=msg.channel,
+                        sender_id=msg.sender_id,
+                        chat_id=msg.chat_id,
+                        content="yes",
+                        metadata=msg.metadata,
+                    ),
+                    session,
+                )
+
+            # Add refinement to task
+            bot_response = result.get("response", "")
+            task_manager.add_refinement(task.id, msg.content, bot_response)
+
+            # Update requirements if provided
+            if result.get("new_requirements"):
+                task.update_requirements(result.get("new_requirements", []))
+
+            # Update description if there are updates
+            if result.get("updates"):
+                task.description = f"{task.description}\n\n更新: {result.get('updates')}"
+
+            session.save_tasks(task_manager)
+            self.sessions.save(session)
+
+            # Format response with task status
+            lines = [
+                bot_response or "✅ 已记录你的反馈",
+                "",
+            ]
+
+            # Show updated requirements if changed
+            if result.get("new_requirements"):
+                lines.append("**更新的需求**:")
+                for req in result.get("new_requirements", []):
+                    lines.append(f"  • {req}")
+                lines.append("")
+
+            # Show task summary
+            lines.append("---")
+            lines.append(f"📋 当前任务: `{task.id}`")
+            lines.append(f"状态: {task._status_emoji()} `{task.status}`")
+            lines.append(f"需求数: {len(task.requirements)}")
+            lines.append("")
+            lines.append("回复 `yes` 批准执行，或继续补充需求")
+
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="\n".join(lines),
+                metadata=msg.metadata,
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to process refinement: {e}")
+            # Fallback: just acknowledge and let normal processing continue
+            task_manager.add_refinement(task.id, msg.content)
+            session.save_tasks(task_manager)
+            self.sessions.save(session)
+            return None
+
+    async def _execute_task(
+        self,
+        msg: InboundMessage,
+        task: Task,
+    ) -> OutboundMessage:
+        """Execute an approved task as a background subagent."""
+        task_id = f"TASK-{task.id[:4].upper()}"
+
+        # Build task prompt with all context
+        refinements = task.context.get("refinements", [])
+        refinement_text = ""
+        if refinements:
+            refinement_text = "\n\n用户需求迭代:\n"
+            for i, ref in enumerate(refinements, 1):
+                refinement_text += f"{i}. {ref['user']}\n"
+
+        task_prompt = f"""Execute this development task:
+
+任务ID: {task_id}
+标题: {task.title}
+
+描述:
+{task.description}
+
+需求:
+{chr(10).join(f'  • {r}' for r in task.requirements) if task.requirements else '  无特定需求'}{refinement_text}
+
+方案:
+{json.dumps(task.proposed_solution, ensure_ascii=False, indent=2)}
+
+When complete, provide:
+1. 完成内容摘要
+2. 创建/修改的文件列表
+3. 如何使用/测试结果
+4. 后续维护建议"""
+
+        # Create system message for subagent
+        system_msg = InboundMessage(
+            channel="system",
+            sender_id=f"task_{task_id}",
+            chat_id=f"{msg.channel}:{msg.chat_id}",
+            content=task_prompt,
+        )
+
+        # Mark task as executing
+        task.status = "executing"
+        # Will be saved when session is saved
+
+        # Publish to inbound queue
+        await self.bus.publish_inbound(system_msg)
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=f"✅ 任务已批准\n\n任务ID: `{task_id}`\n正在后台执行...\n\n发送 `status {task_id}` 查询进度",
+            metadata=msg.metadata,
+        )
 
     async def _handle_task_approval(
         self,

@@ -19,6 +19,8 @@ services:
       - ./config-test.json:/root/.nanobot/config.json:ro
       # Mount workspace for persistent data
       - ./workspace-test:/root/.nanobot/workspace
+      # Mount sessions directory for task/conversation persistence
+      - ./sessions-test:/root/.nanobot/sessions
       # Optional: mount skills directory for live updates during dev
       - ./nanobot/skills:/app/nanobot/skills:ro
     environment:
