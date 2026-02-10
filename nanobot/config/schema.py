@@ -172,6 +172,18 @@ class Config(BaseSettings):
                 return spec.default_api_base
         return None
 
+    def get_provider_name(self, model: str | None = None) -> str | None:
+        """Get the name of the provider for the given model."""
+        from nanobot.providers.registry import PROVIDERS
+        p = self.get_provider(model)
+        if not p:
+            return None
+        # Find which provider this config belongs to
+        for spec in PROVIDERS:
+            if p == getattr(self.providers, spec.name, None):
+                return spec.name
+        return None
+
     class Config:
         env_prefix = "NANOBOT_"
         env_nested_delimiter = "__"
