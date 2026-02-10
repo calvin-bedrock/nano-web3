@@ -1005,7 +1005,6 @@ Rules:
         task: Task,
     ) -> OutboundMessage:
         """Execute an approved task as a background subagent."""
-        task_id = f"TASK-{task.id[:4].upper()}"
 
         # Build task prompt with all context
         refinements = task.context.get("refinements", [])
@@ -1017,7 +1016,7 @@ Rules:
 
         task_prompt = f"""Execute this development task:
 
-任务ID: {task_id}
+任务ID: {task.id}
 标题: {task.title}
 
 描述:
@@ -1038,7 +1037,7 @@ When complete, provide:
         # Create system message for subagent
         system_msg = InboundMessage(
             channel="system",
-            sender_id=f"task_{task_id}",
+            sender_id=f"task_{task.id}",
             chat_id=f"{msg.channel}:{msg.chat_id}",
             content=task_prompt,
         )
@@ -1053,7 +1052,7 @@ When complete, provide:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=f"✅ 任务已批准\n\n任务ID: `{task_id}`\n正在后台执行...\n\n发送 `status {task_id}` 查询进度",
+            content=f"✅ 任务已批准\n\n任务ID: `{task.id}`\n正在后台执行...\n\n发送 `status {task.id}` 查询进度",
             metadata=msg.metadata,
         )
 
