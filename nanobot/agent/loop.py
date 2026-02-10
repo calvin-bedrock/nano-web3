@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -414,6 +415,30 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         existing_task = None
         content_stripped = msg.content.strip()
         content_lower = content_stripped.lower()
+
+        # Check if message starts with a task ID (e.g., "app-1 fix the bug")
+        # Pattern: task-id followed by space and more content
+        task_id_match = re.match(r'^([a-z]+-\d+)\s+(.+)', content_stripped, re.IGNORECASE)
+        if task_id_match:
+            referenced_task_id = task_id_match.group(1).lower()
+            refinement_content = task_id_match.group(2)
+            referenced_task = task_manager.get_task(referenced_task_id)
+            if referenced_task:
+                # User is referencing an existing task - add as refinement
+                logger.info(f"Found task by reference '{referenced_task_id}': {referenced_task_id}")
+                referenced_task.add_refinement(refinement_content, action="modified")
+                referenced_task.status = "refining"
+                session.active_task_id = referenced_task.id
+                session.save_tasks(task_manager)
+                self.sessions.save(session)
+
+                # Show the updated task
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=f"📝 已添加到 `{referenced_task.id}`:\n\n{referenced_task.format_for_user()}\n\n---\n回复 `yes` 执行，或继续补充需求。",
+                    metadata=msg.metadata,
+                )
 
         # Sort by created_at to find the OLDEST matching task (not most recent)
         all_tasks = sorted(task_manager._tasks.values(), key=lambda t: t.created_at)
