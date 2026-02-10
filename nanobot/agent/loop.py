@@ -432,11 +432,22 @@ If NOT a dev task, return {"is_dev_task": false}."""},
                 session.save_tasks(task_manager)
                 self.sessions.save(session)
 
-                # Show the updated task
+                # Show the updated task with the new refinement
+                lines = [
+                    f"📝 已添加到 `{referenced_task.id}` - *{referenced_task.title}*",
+                    "",
+                    "**新需求:**",
+                    f"  {refinement_content}",
+                    "",
+                    f"{referenced_task.format_for_user()}",
+                    "",
+                    "---",
+                    "回复 `yes` 执行，或继续补充需求。",
+                ]
                 return OutboundMessage(
                     channel=msg.channel,
                     chat_id=msg.chat_id,
-                    content=f"📝 已添加到 `{referenced_task.id}`:\n\n{referenced_task.format_for_user()}\n\n---\n回复 `yes` 执行，或继续补充需求。",
+                    content="\n".join(lines),
                     metadata=msg.metadata,
                 )
 
