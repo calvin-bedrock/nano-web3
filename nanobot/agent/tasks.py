@@ -124,49 +124,54 @@ class Task:
         # Use title as the main display
         title_display = self.title or self.description.split('\n')[0][:50] if self.description else "未命名任务"
 
+        # Status text
+        status_text = {
+            "drafting": "草稿",
+            "refining": "完善中",
+            "approved": "已批准",
+            "executing": "执行中",
+            "completed": "已完成",
+            "failed": "失败",
+        }.get(self.status, self.status)
+
         lines = [
-            f"{self._status_emoji()} **{self.id}** - *{title_display}*",
+            f"{self._status_emoji()} `{self.id}` - *{title_display}*",
+            f"状态: {status_text}",
             "",
         ]
 
-        if self.description:
-            # Show description but truncate if too long
-            desc = self.description
-            if len(desc) > 200:
-                desc = desc[:200] + "..."
-            lines.append(f"{desc}")
-            lines.append("")
+        # Show execution info
+        if self.status == "executing":
+            if self.assigned_to:
+                elapsed = int((datetime.now() - self.updated_at).total_seconds() // 60)
+                lines.append(f"🤖 Subagent `{self.assigned_to}` • 运行 {elapsed} 分钟")
+            else:
+                lines.append("🔄 正在启动...")
+        elif self.status == "completed" and self.assigned_to:
+            lines.append(f"✨ 由 `{self.assigned_to}` 完成")
 
-        if self.requirements:
-            lines.append("**需求**:")
-            for req in self.requirements:
-                lines.append(f"  • {req}")
-            lines.append("")
-
-        if self.proposed_solution:
-            sol = self.proposed_solution
-            if sol.get("analysis"):
-                lines.append(f"**方案**: {sol['analysis']}")
-                lines.append("")
-            if sol.get("steps"):
-                lines.append("**步骤**:")
-                for i, step in enumerate(sol.get("steps", []), 1):
-                    lines.append(f"  {i}. {step}")
-                lines.append("")
-
+        # Show recent refinements FIRST (most important for user)
         refinements = self.context.get("refinements", [])
         if refinements:
-            lines.append(f"**迭代记录** ({len(refinements)}次):")
-            # Show most recent refinement first
-            for ref in reversed(refinements[-5:]):  # Last 5 refinements
+            lines.append("")
+            lines.append(f"📝 **迭代记录** ({len(refinements)}次):")
+            # Show most recent refinements first
+            for ref in reversed(refinements[-5:]):
                 user_msg = ref.get("user", "")
                 # Truncate if too long
-                if len(user_msg) > 100:
-                    user_msg = user_msg[:100] + "..."
+                if len(user_msg) > 150:
+                    user_msg = user_msg[:150] + "..."
                 lines.append(f"  • {user_msg}")
             if len(refinements) > 5:
                 lines.append(f"  ... 还有 {len(refinements) - 5} 条")
+
+        # Show requirements (compact)
+        if self.requirements:
             lines.append("")
+            req_text = " | ".join(self.requirements[:3])
+            if len(self.requirements) > 3:
+                req_text += f" (+{len(self.requirements) - 3} 更多)"
+            lines.append(f"**需求**: {req_text}")
 
         return "\n".join(lines)
 
