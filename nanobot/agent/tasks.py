@@ -49,12 +49,13 @@ class Task:
     updated_at: datetime = field(default_factory=datetime.now)
     assigned_to: str | None = None  # Subagent ID when executing
 
-    def add_refinement(self, user_message: str, bot_response: str | None = None) -> None:
+    def add_refinement(self, user_message: str, bot_response: str | None = None, action: str | None = None) -> None:
         """Add a user refinement to the task context."""
         self.context.setdefault("refinements", []).append({
             "timestamp": datetime.now().isoformat(),
             "user": user_message,
-            "bot": bot_response
+            "bot": bot_response,
+            "action": action
         })
         self.updated_at = datetime.now()
 
@@ -265,7 +266,7 @@ class TaskManager:
         task.updated_at = datetime.now()
         return task
 
-    def add_refinement(self, task_id: str, user_message: str, bot_response: str | None = None) -> Task | None:
+    def add_refinement(self, task_id: str, user_message: str, bot_response: str | None = None, action: str | None = None) -> Task | None:
         """Add a user refinement to a task."""
         task = self._tasks.get(task_id)
         if not task:
@@ -275,7 +276,7 @@ class TaskManager:
         if task.status == "drafting":
             task.status = "refining"
 
-        task.add_refinement(user_message, bot_response)
+        task.add_refinement(user_message, bot_response, action)
         return task
 
     def approve_task(self, task_id: str) -> Task | None:
