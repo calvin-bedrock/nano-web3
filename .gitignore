@@ -25,3 +25,4 @@ workspace-prod/
 poetry.lock
 .pytest_cache/
 tests/
+botpy.log
