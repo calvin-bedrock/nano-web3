@@ -156,7 +156,16 @@ class Task:
 
         refinements = self.context.get("refinements", [])
         if refinements:
-            lines.append(f"**迭代** ({len(refinements)}次):")
+            lines.append(f"**迭代记录** ({len(refinements)}次):")
+            # Show most recent refinement first
+            for ref in reversed(refinements[-5:]):  # Last 5 refinements
+                user_msg = ref.get("user", "")
+                # Truncate if too long
+                if len(user_msg) > 100:
+                    user_msg = user_msg[:100] + "..."
+                lines.append(f"  • {user_msg}")
+            if len(refinements) > 5:
+                lines.append(f"  ... 还有 {len(refinements) - 5} 条")
             lines.append("")
 
         return "\n".join(lines)
