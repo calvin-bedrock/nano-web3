@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -298,7 +299,12 @@ class AgentLoop:
             - requirements: List of requirements (storage, web service, etc.)
             - estimated_cost: Estimated cost/time
             - steps: High-level implementation steps
+            - complexity: "simple" or "complex"
         """
+        # Fast pre-check for simple tasks (no LLM needed)
+        content_stripped = content.strip()
+        is_simple = self._is_simple_task(content_stripped)
+
         analyze_prompt = [
             {"role": "system", "content": """Analyze if the user's request is a development task.
 
@@ -309,13 +315,18 @@ A development task involves:
 - Web applications or APIs
 - Complex automation
 
+Classify complexity:
+- "simple": Single clear action, short request (<80 chars), one file change, quick fix
+- "complex": Multiple steps, new features, requires planning, multiple files
+
 Respond with JSON only:
 {
     "is_dev_task": true/false,
     "analysis": "Brief description of what needs to be done",
     "requirements": ["list of requirements like database, web server, etc"],
     "estimated_cost": "estimated time/cost",
-    "steps": ["step1", "step2", "..."]
+    "steps": ["step1", "step2", "..."],
+    "complexity": "simple" or "complex"
 }
 
 If NOT a dev task, return {"is_dev_task": false}."""},
@@ -353,6 +364,11 @@ If NOT a dev task, return {"is_dev_task": false}."""},
                 result = {"is_dev_task": True}
 
             if result.get("is_dev_task"):
+                # Use LLM complexity, but override with fast check if LLM didn't provide it
+                complexity = result.get("complexity")
+                if not complexity:
+                    complexity = "simple" if is_simple else "complex"
+
                 return {
                     "type": "dev_task",
                     "original_request": content,  # User's original request
@@ -360,11 +376,41 @@ If NOT a dev task, return {"is_dev_task": false}."""},
                     "requirements": result.get("requirements", []),
                     "estimated_cost": result.get("estimated_cost", "30-60 minutes"),
                     "steps": result.get("steps", ["Analyze requirements", "Implement solution", "Test and deploy"]),
+                    "complexity": complexity,
                 }
             return None
         except Exception as e:
             logger.warning(f"Failed to analyze dev task: {e}")
             return None
+
+    def _is_simple_task(self, content: str) -> bool:
+        """
+        Fast check if a task is simple (no LLM needed).
+
+        Simple tasks:
+        - Short (<80 chars)
+        - Single sentence
+        - Clear action (fix, add, remove, change)
+        - No "and", "also", "plus" connecting multiple actions
+        """
+        # Length check
+        if len(content) > 80:
+            return False
+
+        # Multiple sentences or conjunctions suggesting multiple tasks
+        multiple_indicators = [" and ", " also ", " plus ", " then ", " afterwards ",
+                               " 并且 ", " 还有 ", " 然后 ", " 之后 ", "，", "；"]
+        if any(indicator in content.lower() for indicator in multiple_indicators):
+            return False
+
+        # Complex project indicators
+        complex_keywords = ["build", "create.*app", "implement.*system", "design",
+                           "搭建", "构建", "实现.*系统", "设计"]
+        for keyword in complex_keywords:
+            if re.search(keyword, content.lower()):
+                return False
+
+        return True
 
     async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
@@ -424,6 +470,18 @@ If NOT a dev task, return {"is_dev_task": false}."""},
             refinement_content = task_id_match.group(2)
             referenced_task = task_manager.get_task(referenced_task_id)
             if referenced_task:
+                # Check if this is a STATUS QUESTION about the task
+                # (e.g., "app-1 bug修复了吗?" should show status, not add refinement)
+                if self._is_completion_question(refinement_content):
+                    logger.info(f"Task reference '{referenced_task_id}' is a status question, showing task status")
+                    # Show task status instead of adding as refinement
+                    return OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=referenced_task.format_for_user(),
+                        metadata=msg.metadata,
+                    )
+
                 # User is referencing an existing task - add as refinement
                 logger.info(f"Found task by reference '{referenced_task_id}': {referenced_task_id}")
                 referenced_task.add_refinement(refinement_content, action="modified")
@@ -632,12 +690,13 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         """
         Create a new task from a development request.
 
-        Creates task in drafting state and shows it to user for refinement.
+        Simple tasks are auto-executed. Complex tasks require approval.
         """
         task_manager = session.get_task_manager()
 
         title = self._extract_task_title(dev_task.get("original_request", ""))
-        logger.info(f"Creating task: title={title}, description={dev_task.get('original_request', '')[:50]}")
+        complexity = dev_task.get("complexity", "complex")
+        logger.info(f"Creating task: title={title}, complexity={complexity}, description={dev_task.get('original_request', '')[:50]}")
 
         task = task_manager.create_task(
             title=title,
@@ -651,19 +710,28 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         if dev_task.get("requirements"):
             task.update_requirements(dev_task["requirements"])
 
-        # Set as active task
+        # Simple tasks: auto-execute immediately
+        if complexity == "simple":
+            logger.info(f"Task {task.id} is simple, auto-executing")
+            task.status = "approved"
+            session.save_tasks(task_manager)
+            self.sessions.save(session)
+            # Execute immediately
+            return await self._execute_task(msg, task)
+
+        # Complex tasks: require approval
         session.active_task_id = task.id
         session.save_tasks(task_manager)
         self.sessions.save(session)
 
         logger.info(f"Task saved: active_task_id={session.active_task_id}, tasks_data_keys={list(session.tasks_data.get('tasks', {}).keys()) if session.tasks_data else None}")
 
-        # Show task to user
+        # Show task to user for approval
         task.status = "refining"  # Allow refinement immediately
         summary = task.format_for_user()
 
         lines = [
-            f"✅ 任务已创建: `{task.id}`",
+            f"📋 任务已创建: `{task.id}`",
             "",
             summary,
             "",
@@ -873,6 +941,37 @@ If NOT a dev task, return {"is_dev_task": false}."""},
             metadata=msg.metadata,
         )
 
+    def _is_completion_question(self, content: str) -> bool:
+        """
+        Detect if the user is asking about task completion/progress.
+
+        This catches questions like "bug修复没有？" that don't match
+        standard question patterns but are asking about task status.
+        """
+        import re
+        content_lower = content.lower().strip()
+        content_stripped = content.strip()
+
+        # Completion question patterns in Chinese and English
+        completion_patterns = [
+            # Chinese: "X(完成/修复)了吗/没有/没?"
+            r'.*(修复|完成|做好|弄好|ready|done|fixed|finished|finished).*(吗|呢|么|没|没有|\?)',
+            r'.*[？?](吗|呢|么|没|没有)$',
+            r'.*[？?]$',
+            # "是否/有没有/has/is done"
+            r'^(是否|有没有|did|have|has|is.*done|are.*ready|怎么样|how)',
+            # Short queries about progress
+            r'^(进度|状态|status|progress|怎么样|如何)',
+            # Task-specific: "app-1?" or "app-1怎么样"
+            r'^[a-z]+-\d+[？?]?.*$',
+        ]
+
+        for pattern in completion_patterns:
+            if re.match(pattern, content_lower) or re.search(pattern, content_lower):
+                return True
+
+        return False
+
     async def _process_refinement(
         self,
         msg: InboundMessage,
@@ -888,6 +987,29 @@ If NOT a dev task, return {"is_dev_task": false}."""},
         2. A question about the task
         3. A modification to the plan
         """
+        # Check for completion/progress questions FIRST
+        # These should show status without creating new requirements
+        if self._is_completion_question(msg.content):
+            # This is a status question - respond with current task status
+            # Use the rich format_for_user() display
+            task_display = task.format_for_user()
+
+            # Add helpful action hints based on status
+            action_hint = ""
+            if task.status in ("drafting", "refining"):
+                action_hint = "\n\n💡 回复 `yes` 批准执行，或继续补充需求"
+            elif task.status == "approved":
+                action_hint = "\n\n💡 任务已批准，准备开始执行..."
+            elif task.status == "executing":
+                action_hint = "\n\n💡 任务正在后台执行中..."
+
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=task_display + action_hint,
+                metadata=msg.metadata,
+            )
+
         # Build refinement analysis prompt
         refinement_prompt = [
             {
@@ -905,7 +1027,18 @@ Proposed Solution:
 
 Previous Refinements: {len(task.context.get('refinements', []))}
 
-Analyze the user's new input and respond with JSON:
+IMPORTANT - Distinguish between:
+1. **Questions** about the task (e.g., "bug修复没有?", "怎么样?", "how is it going?")
+   → Set is_question=true, respond with status info
+2. **New requirements** (e.g., "修复这个bug", "add a button", "fix the issue")
+   → Set is_requirement=true, extract new_requirements
+
+Chinese completion questions to recognize as questions (NOT requirements):
+- "bug修复没有?" / "bug修好了吗?" / "修复完成了吗?" = asking about status
+- "怎么样?" / "如何?" / "进度如何?" = asking for progress update
+- "好了吗?" / "做完了吗?" / "完成了没?" = asking about completion
+
+Respond with JSON:
 {{
     "is_approval": true/false,
     "is_question": true/false,
@@ -917,8 +1050,9 @@ Analyze the user's new input and respond with JSON:
 
 Rules:
 - If user says yes/confirm/批准, set is_approval=true
-- If user asks a question, set is_question=true and provide response
+- If user asks a question about status/progress, set is_question=true and provide response
 - If user adds/modifies requirements, extract them as new_requirements
+- Ambiguous inputs should be treated as questions, not requirements
 - Always provide a helpful response"""
             },
             {"role": "user", "content": msg.content},
@@ -948,8 +1082,35 @@ Rules:
                     session,
                 )
 
-            # Add refinement to task
+            # If it's a question, respond WITHOUT adding as refinement
+            # This prevents treating status questions as new requirements
+            is_question = result.get("is_question", False)
             bot_response = result.get("response", "")
+
+            if is_question:
+                # Just answer the question, don't add to task refinements
+                lines = [bot_response or "ℹ️ 任务状态查询", ""]
+
+                # Show task summary for context
+                lines.append("---")
+                lines.append(f"📋 当前任务: `{task.id}`")
+                lines.append(f"状态: {task._status_emoji()} `{task.status}`")
+
+                refinements = task.context.get("refinements", [])
+                if refinements:
+                    lines.append(f"迭代: {len(refinements)} 次")
+
+                lines.append("")
+                lines.append("回复 `yes` 批准执行，或继续补充需求")
+
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content="\n".join(lines),
+                    metadata=msg.metadata,
+                )
+
+            # Otherwise it's a requirement/refinement - add to task
             task_manager.add_refinement(task.id, msg.content, bot_response)
 
             # Update requirements if provided
